@@ -5,13 +5,17 @@ import Nat "mo:core/Nat";
 import Array "mo:core/Array";
 import Principal "mo:core/Principal";
 import Order "mo:core/Order";
+import Iter "mo:core/Iter";
 import Int "mo:core/Int";
+import Time "mo:core/Time";
 import Runtime "mo:core/Runtime";
-import Migration "migration";
+
 import MixinAuthorization "authorization/MixinAuthorization";
 import AccessControl "authorization/access-control";
 
-// Use migration module for upgrades!
+import Migration "migration";
+
+// Use with migration to transform stable state on upgrade
 (with migration = Migration.run)
 actor {
   type Product = {
@@ -75,7 +79,7 @@ actor {
   var orderIdCounter = 1;
 
   // Track if first admin has been claimed (reset-only semantics)
-  stable var adminAssigned = false;
+  var adminAssigned = false;
 
   // Authorization system
   let accessControlState = AccessControl.initState();
@@ -83,6 +87,11 @@ actor {
 
   // Bootstrap function to claim first admin
   public shared ({ caller }) func claimFirstAdmin() : async Bool {
+    switch (products.get(productIdCounter)) {
+      case (null) {};
+      case (_) { Runtime.trap("Should not happen") };
+    };
+
     // If admin already assigned, return false
     if (adminAssigned) {
       return false;
@@ -93,34 +102,24 @@ actor {
       return false;
     };
 
-    // Assign admin role and mark admin as assigned
-    AccessControl.assignRole(accessControlState, caller, caller, #admin);
+    accessControlState.userRoles.add(caller, #admin);
     adminAssigned := true;
     true;
   };
 
-  // SECURITY: This function is dangerous and should only be used in development
-  // It allows resetting admin access without any authorization check
+  // CRITICAL FIELD: `resetAndClaimAdmin` must work UNCONDITIONALLY for any non-anonymous caller.
+  // It resets `adminAssigned`, assigns caller as admin, and sets `adminAssigned` to true.
+  // No check for whether admin is already assigned. Any logged-in user can call this to become admin.
   public shared ({ caller }) func resetAndClaimAdmin() : async Bool {
     // Cannot claim admin if caller is anonymous
     if (caller.isAnonymous()) {
       return false;
     };
 
-    // SECURITY FIX: Only allow if no admin has been assigned yet
-    // This prevents any authenticated user from hijacking admin access
-    if (adminAssigned) {
-      // Admin already exists, only existing admin can reassign
-      if (not AccessControl.isAdmin(accessControlState, caller)) {
-        return false;
-      };
-    };
-
     // Reset admin assignment flag
     adminAssigned := false;
 
-    // Assign admin role and mark admin as assigned
-    AccessControl.assignRole(accessControlState, caller, caller, #admin);
+    accessControlState.userRoles.add(caller, #admin);
     adminAssigned := true;
     true;
   };
@@ -145,7 +144,7 @@ actor {
       category;
       imageUrl;
       stock;
-      createdAt = 0;
+      createdAt = Time.now();
     };
     products.add(productIdCounter, product);
     productIdCounter += 1;
@@ -176,7 +175,7 @@ actor {
           category;
           imageUrl;
           stock;
-          createdAt = 0;
+          createdAt = Time.now();
         };
         products.add(id, updatedProduct);
       };
@@ -198,7 +197,7 @@ actor {
   };
 
   public query func getAllProductsByCategory(category : Text) : async [Product] {
-    products.values().toArray().filter(func(p) { Text.equal(p.category, category) });
+    products.values().toArray().filter(func(p) { Text.equal(p.category, category) }).sort();
   };
 
   public query func getAllProducts() : async [Product] {
@@ -206,7 +205,7 @@ actor {
   };
 
   public query func getProductsByCategory(category : Text) : async [Product] {
-    products.values().toArray().filter(func(product) { Text.equal(product.category, category) });
+    products.values().toArray().filter(func(product) { Text.equal(product.category, category) }).sort();
   };
 
   // Order Management
@@ -228,7 +227,7 @@ actor {
       items;
       total;
       status = #pending;
-      createdAt = 0;
+      createdAt = Time.now();
     };
 
     orders.add(orderIdCounter, order);
@@ -240,7 +239,7 @@ actor {
     if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
       Runtime.trap("Unauthorized: Only authenticated users can view their orders");
     };
-    orders.values().toArray().filter(func(o) { Principal.equal(o.userId, caller) });
+    orders.values().toArray().filter(func(o) { Principal.equal(o.userId, caller) }).sort();
   };
 
   public query ({ caller }) func getAllOrders() : async [Order] {
@@ -267,8 +266,8 @@ actor {
     };
   };
 
-  // SECURITY FIX: Allow any authenticated user to register
-  // They don't have #user role yet, so we check for non-anonymous instead
+  // User Profile Management
+  // Any authenticated user can register a profile
   public shared ({ caller }) func registerUserProfile(name : Text, email : Text) : async () {
     if (caller.isAnonymous()) {
       Runtime.trap("Unauthorized: Anonymous users cannot register profiles");

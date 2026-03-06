@@ -1,28 +1,21 @@
 # PawMart
 
 ## Current State
-PawMart is a full-stack animal meds and foods e-commerce app. It has:
-- A product storefront with categories (Dogs, Cats, Birds, Fish, Medicines)
-- Shopping cart and order placement
-- Admin panel for product/order/customer management
-- Authorization system with admin/user roles
-- The backend has `claimFirstAdmin()`, `forceClaimAdminWithToken()`, and products/orders/users management
-- **Bug**: `forceClaimAdminWithToken()` compares the token against the literal string `"CAFFEINE_ADMIN_TOKEN"` instead of the real environment variable, so it never works
-- The admin is stuck in an "Admin Access Required" loop with no way to claim admin
+Full e-commerce app for animal meds and food. Has products, cart, orders, admin panel. Admin access uses a two-stage system: `claimFirstAdmin` (works only if no admin assigned) and `resetAndClaimAdmin` (only works if no admin assigned OR caller is already admin). This creates a deadlock: if a previous deployment set `adminAssigned = true` with a different principal, the current user cannot claim admin.
 
 ## Requested Changes (Diff)
 
 ### Add
-- `resetAndClaimAdmin()` backend function: resets any existing admin assignment and makes the caller the new admin. No token required. Works whether or not admin was previously assigned.
-- Fix `forceClaimAdminWithToken()` to use `Runtime.env("CAFFEINE_ADMIN_TOKEN")` instead of the hardcoded string
+- New backend function `forceResetAdmin()` that unconditionally resets `adminAssigned` to false and assigns the caller as admin, with no authorization check (any authenticated non-anonymous caller can invoke it). This breaks the deadlock.
 
 ### Modify
-- Admin page frontend: replace the token form fallback with a simple "Claim Admin" button that calls `resetAndClaimAdmin()` directly
-- The auto-claim flow should first try `claimFirstAdmin()`, and if that returns false (already claimed), show a button to call `resetAndClaimAdmin()`
+- `resetAndClaimAdmin` backend function: remove the block that prevents non-admins from resetting when admin is already assigned -- replace with the unconditional force-reset logic.
+- Frontend `ClaimAdminPanel`: the "Claim Admin Access" button should call `resetAndClaimAdmin` (already does), which now works unconditionally for any logged-in user.
 
 ### Remove
-- The confusing "where to find your token" instructions since we no longer need them for the primary flow
+- The conditional guard in `resetAndClaimAdmin` that blocks non-admins when `adminAssigned == true`.
 
 ## Implementation Plan
-1. Regenerate backend with fixed `forceClaimAdminWithToken` (uses Runtime.env) and new `resetAndClaimAdmin` function
-2. Update AdminPage.tsx to use the simpler `resetAndClaimAdmin()` flow when `claimFirstAdmin()` returns false
+1. Regenerate Motoko backend with updated `resetAndClaimAdmin` that force-resets admin unconditionally for any non-anonymous caller.
+2. Keep all existing product, order, user management functions intact.
+3. No frontend changes needed -- `ClaimAdminPanel` already calls `resetAndClaimAdmin`.
